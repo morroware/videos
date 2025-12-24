@@ -1,0 +1,58 @@
+{
+    "enabled": true,
+    "title": "Staff Picks",
+    "videos": [
+      
+        {
+            "id": "the-pee-wee-herman-show",
+            "title": "The Pee-wee Herman Show",
+            "creator": "Paul Reubens"
+        },
+        {
+            "id": "TheOuterLimits1x0102TheSandkings",
+            "title": "The Outer Limits",
+            "creator": "Unknown"
+        },
+        {
+            "id": "final-space_202209",
+            "title": "Final Space Complete Season 1-3 (2018-2021)",
+            "creator": "Unknown"
+        },
+        {
+            "id": "radar-men-from-the-moon",
+            "title": "Radar Men from the Moon (1952)",
+            "creator": "Republic Pictures"
+        },
+        {
+            "id": "startrekcontinues_202006",
+            "title": "Star Trek Continues",
+            "creator": "Vic Mignogna"
+        },
+        {
+            "id": "get-a-life_202510",
+            "title": "Get A Life (1990-92)",
+            "creator": "Elliotland Productions, Mirkinvision"
+        },
+        {
+            "id": "the-secret-of-nimh",
+            "title": "The Secret Of Nimh",
+            "creator": "MGM\/UA Home Video"
+        },
+        {
+            "id": "beavis-and-butthead-king-turd-collection",
+            "title": "Beavis and Butthead - King Turd Collection",
+            "creator": "Mike Judge"
+        },
+        {
+            "id": "lunchroom_manners",
+            "title": "Beginning Responsibility: Lunchroom Manners",
+            "creator": "Unknown"
+        },
+         {
+            "id": "raggedy-anne-andy-a-musical-adventure-ia-copy",
+            "title": "Raggedy Anne & Andy: A Musical Adventure",
+            "creator": "Unknown"
+        }
+    ],
+    "updated": "2025-12-11T21:04:36+00:00"
+}

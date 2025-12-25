@@ -3,7 +3,7 @@
  * Manages the Staff Picks / Recommended videos section
  */
 
-import { escapeHtml, extractValue } from '../utils/helpers.js';
+import { escapeHtml, extractValue, formatRuntime } from '../utils/helpers.js';
 import { ICONS } from '../utils/icons.js';
 
 export class RecommendedManager {
@@ -143,7 +143,7 @@ export class RecommendedManager {
     const title = extractValue(video.title) || 'Untitled';
     const creator = extractValue(video.creator) || 'Unknown';
     const thumbUrl = `https://archive.org/services/img/${video.identifier}`;
-    const runtime = this.app.formatRuntime(video.runtime);
+    const runtime = formatRuntime(video.runtime);
 
     return `
       <article class="recommended-card" data-identifier="${video.identifier}">

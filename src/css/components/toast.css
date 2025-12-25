@@ -1,0 +1,102 @@
+/**
+ * Toast Notification Styles
+ * Modern toast messages with animations
+ */
+
+.toast {
+  position: fixed;
+  bottom: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%) translateY(100%);
+  padding: var(--space-3) var(--space-6);
+  background: rgba(39, 39, 39, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  z-index: var(--z-toast);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  opacity: 0;
+  transition: all var(--transition-smooth);
+  max-width: 90vw;
+}
+
+.toast--visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.toast--hiding {
+  transform: translateX(-50%) translateY(20px);
+  opacity: 0;
+}
+
+.toast-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.toast-message {
+  flex: 1;
+}
+
+/* Toast Variants */
+.toast--success {
+  background: rgba(15, 157, 88, 0.95);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.toast--success .toast-icon {
+  color: #ffffff;
+}
+
+.toast--error {
+  background: rgba(234, 67, 53, 0.95);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.toast--error .toast-icon {
+  color: #ffffff;
+}
+
+.toast--info {
+  background: rgba(6, 95, 212, 0.95);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.toast--info .toast-icon {
+  color: #ffffff;
+}
+
+/* Toast with action button */
+.toast-action {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  transition: background var(--transition-fast);
+  margin-left: var(--space-2);
+}
+
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Multiple toasts stacking */
+.toast:nth-last-child(2) {
+  bottom: calc(var(--space-6) + 60px);
+}
+
+.toast:nth-last-child(3) {
+  bottom: calc(var(--space-6) + 120px);
+}

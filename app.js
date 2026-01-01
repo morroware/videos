@@ -714,11 +714,14 @@ class ArchiveVideoSearch {
         }, 1000);
       }
 
-      if (videoData.videoFiles.length > 1 && this.videoService.hasMultipleUniqueVideos(videoData.videoFiles)) {
-        const startIndex = track !== null && track >= 0 && track < videoData.videoFiles.length ? track : 0;
-        this.setupPlaylist(id, title, creator, videoData.metadata, videoData.videoFiles, startIndex);
+      // Deduplicate video files to avoid showing both .ia and .mp4 for the same episode
+      const deduplicatedFiles = this.videoService.deduplicateVideoFiles(videoData.videoFiles);
+
+      if (deduplicatedFiles.length > 1 && this.videoService.hasMultipleUniqueVideos(deduplicatedFiles)) {
+        const startIndex = track !== null && track >= 0 && track < deduplicatedFiles.length ? track : 0;
+        this.setupPlaylist(id, title, creator, videoData.metadata, deduplicatedFiles, startIndex);
       } else {
-        this.displayVideoMetadata(title, creator, videoData.metadata, videoData.videoFiles);
+        this.displayVideoMetadata(title, creator, videoData.metadata, deduplicatedFiles);
       }
 
     } catch (err) {

@@ -114,6 +114,73 @@ export class VideoService {
   }
 
   /**
+   * Deduplicate video files for playlist display
+   * When the same episode exists in multiple formats (e.g., .ia and .mp4),
+   * keep only the preferred format (MP4 > other formats)
+   */
+  deduplicateVideoFiles(videoFiles) {
+    if (videoFiles.length <= 1) return videoFiles;
+
+    // Group files by their base name
+    const fileGroups = new Map();
+
+    videoFiles.forEach(file => {
+      // Normalize the filename to get the base episode name
+      let baseName = file.name
+        .replace(/\.[^.]+$/, '') // Remove final extension
+        .replace(/\.(ia|mp4|webm|ogv|avi|mov|mkv|flv|wmv)$/i, '') // Remove video extension
+        .replace(/_\d+p$/i, '') // Remove quality indicators like _720p
+        .replace(/_archive$/i, '')
+        .replace(/_512kb$/i, '')
+        .replace(/_h264$/i, '')
+        .toLowerCase()
+        .trim();
+
+      if (!fileGroups.has(baseName)) {
+        fileGroups.set(baseName, []);
+      }
+      fileGroups.get(baseName).push(file);
+    });
+
+    // For each group, select the best file
+    const deduplicatedFiles = [];
+    fileGroups.forEach((files, baseName) => {
+      if (files.length === 1) {
+        deduplicatedFiles.push(files[0]);
+      } else {
+        // Prefer MP4, then other formats, avoid .ia files if better options exist
+        const mp4Files = files.filter(f => f.name.toLowerCase().endsWith('.mp4'));
+        const iaFiles = files.filter(f => f.name.toLowerCase().endsWith('.ia'));
+        const otherFiles = files.filter(f =>
+          !f.name.toLowerCase().endsWith('.mp4') &&
+          !f.name.toLowerCase().endsWith('.ia')
+        );
+
+        // Priority: MP4 > other formats > .ia files
+        if (mp4Files.length > 0) {
+          // If multiple MP4s, prefer the largest (best quality)
+          mp4Files.sort((a, b) => (parseInt(b.size) || 0) - (parseInt(a.size) || 0));
+          deduplicatedFiles.push(mp4Files[0]);
+        } else if (otherFiles.length > 0) {
+          // Use other video formats if no MP4
+          otherFiles.sort((a, b) => (parseInt(b.size) || 0) - (parseInt(a.size) || 0));
+          deduplicatedFiles.push(otherFiles[0]);
+        } else if (iaFiles.length > 0) {
+          // Fall back to .ia files only if nothing else available
+          deduplicatedFiles.push(iaFiles[0]);
+        }
+      }
+    });
+
+    // Sort the deduplicated files by name to maintain episode order
+    return deduplicatedFiles.sort((a, b) => {
+      const nameA = a.name || '';
+      const nameB = b.name || '';
+      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }
+
+  /**
    * Load a native HTML5 video element
    */
   async loadNativeVideo(id, metadata, videoWrapper, specificFileName = null, userVolume = 1) {

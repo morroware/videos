@@ -360,3 +360,98 @@ Auto-skip groundwork existed (`failedPlaylistIndices`, `findNextPlayable`) but w
 
 > **Verification:** `scripts/check-syntax.sh all` (83 PHP + 35 JS files) and `php tests/smoke.php` pass. The fixes are event-wiring/logic only — no markup or CSS change — and were reasoned through every load path (initial load, track change, quality switch, end-of-video Up Next, seek, and the iframe fallback). They could not be exercised against a live browser + archive.org in this environment, so a manual smoke on a real multi-episode item (seek mid-playback; force a 404 track) is the recommended final check.
 
+---
+
+## Follow-up pass — 2026-06-12
+
+**Scope:** Fresh full-codebase review, focused on the ~3,000 lines landed after the
+original audit (the admin Maintenance feature, player fixes, watchdog) plus a
+re-sweep of everything else. All findings below are **fixed in this PR**.
+
+### F1. Backup dump paged without ORDER BY or a snapshot — corrupt backups possible **[verified]**
+**Where:** `services/Admin/MaintenanceService.php` `dumpTable()` / `streamBackup()`.
+`dumpTable()` paged with `LIMIT n OFFSET m` and **no `ORDER BY`** — MySQL gives no
+ordering guarantee across unordered paged SELECTs, and nothing wrapped the dump in a
+transaction, so writes landing mid-dump shift offsets: rows can be silently
+**duplicated or skipped**, and tables dumped seconds apart can be mutually
+inconsistent (a comment whose user row is missing). The operator's safety net could
+produce corrupt dumps with no warning.
+**Fix:** `streamBackup()` now dumps from a single `REPEATABLE READ` /
+`START TRANSACTION WITH CONSISTENT SNAPSHOT` (the `mysqldump --single-transaction`
+technique, best-effort with fallback), and `dumpTable()` orders every page by the
+table's primary key (`SHOW KEYS … WHERE Key_name='PRIMARY'`).
+
+### F2. No concurrency guard on restore / content-reset / migrations **[verified]**
+**Where:** `services/Admin/MaintenanceService.php`; `api/admin/maintenance.php`.
+Two admins (or one double-submit) could interleave `DROP`/`CREATE`/`INSERT` from two
+restores, or a restore against a content reset — corrupting the DB and each other's
+safety snapshots.
+**Fix:** A per-database advisory lock (`acquireMaintenanceLock()`, same `GET_LOCK`
+pattern as `CacheManager::acquireQueueLock()`) now serializes `restoreFromUpload()`,
+`contentReset()`, `runMigrations()`, and the API's `backup` stream (acquired
+*before* download headers, so a busy lock still returns clean JSON, 409). Held locks
+auto-release if the process dies.
+
+### F3. Uploaded `.sql.gz` decompressed without a size cap **[verified]**
+**Where:** `MaintenanceService::restoreFromUpload()`.
+`gzdecode()` ran uncapped on the upload; an oversized (or corrupt) archive died as
+an opaque out-of-memory 500 mid-request. Now capped at 256 MB decompressed with a
+clear error message. (Admin-only surface — robustness, not an attack fix.)
+
+### F4. `catch (Exception)` around transactions misses `Error` throwables **[verified]**
+**Where:** `services/SettingsService.php` (3 transactional writers),
+`db/Database.php::transaction()`.
+A `TypeError`/`Error` thrown mid-transaction skipped the `catch (Exception)` block,
+so no rollback ran and the connection was left with an open transaction. All four
+sites now catch `Throwable` (with a guarded rollback).
+
+### F5. Electron static denylist missed the new `backups/` directory **[verified]**
+**Where:** `electron/server.js` (`DENY_DIR`).
+The M14 denylist predates the Maintenance feature: `backups/` (server-side **DB
+dumps**) wasn't covered — `*.sql` was extension-blocked but the deny belt now also
+covers the directory itself plus `logs/` and the `.installed` marker.
+
+### F6. `collection.php` not-found page returned HTTP 200 **[verified]**
+Crawlers indexed the "doesn't exist" page as a healthy 200. Now sends
+`http_response_code(404)`.
+
+### F7. Thumbnail proxy hardening **[flagged → fixed]**
+**Where:** `api/thumbnail.php`, `services/ArchiveOrgService.php`.
+Downloads buffered the upstream response with no size cap before handing it to GD
+(the expensive decode step), and the serve path trusted `mime_content_type()`
+verbatim. Now: 10 MB cap on thumbnail downloads (cURL `MAXFILESIZE` + `maxlen` +
+post-check before GD), 50 MB memory-guard cap on archive.org API responses, an
+image-MIME allow-list on the cached-file serve path (non-images fall back to the
+archive.org redirect, never served), and `X-Content-Type-Options: nosniff`.
+
+### F8. CollectionPicker dialog had no focus management **[verified]**
+**Where:** `src/js/components/CollectionPicker.js`.
+`aria-modal="true"` without moving focus in, trapping Tab, or restoring focus on
+close — keyboard users tabbed into the page behind the dialog (WCAG 2.4.3). Now:
+focus moves to the close button on open, Tab/Shift+Tab cycle inside the dialog, and
+focus returns to the opener on close.
+
+### Polish in the same pass
+- **offline.html** brand-red button → neutral (closes UI/UX rec #7; the file is
+  SW-served statically and can't read the admin brand color).
+- **Restore panel copy** now states restores are not atomic and to use the safety
+  snapshot if failures are reported.
+- **README repairs:** env-var table un-broken (a "Maintenance Notes" H2 was wedged
+  mid-table), migration lists 001→007 (007 was missing from manual setup), the
+  Maintenance admin feature + `api/admin/*` endpoints documented.
+
+### Reviewed and rejected (false positives from this pass's review)
+- `Database::rollBack()` vs `rollback()` "undefined method" — PHP method names are
+  case-insensitive; no `__call` involved.
+- `PDO::quote()` null-byte truncation in the dump — the MySQL driver escapes
+  `\x00`; no BLOB columns in the schema regardless.
+- `switch` fall-through in `api/admin/metrics.php` — every case ends in
+  `ok()`/`error()`, both of which exit.
+
+> **Verification:** `scripts/check-syntax.sh all` and `php tests/smoke.php` pass
+> (incl. the `splitSqlStatements` unit cases). DB-touching changes (snapshot dump,
+> GET_LOCK) follow the same patterns already proven in `CacheManager`/cron but were
+> not exercised against a live MySQL in this environment — recommended manual check:
+> take a backup while browsing the site, restore it, and run two restores
+> concurrently to see the 409/busy path.
+

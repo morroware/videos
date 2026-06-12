@@ -22,6 +22,7 @@ A feature-rich web application for discovering and watching classic films from [
 - **Site Settings** - Configure site name, default collection, sort order, and more
 - **Appearance** - Customize brand colors, theme, and card styles with live preview
 - **Display Options** - Toggle video card metadata, bookmarks, and watch history features
+- **Maintenance** - Database status, one-click SQL backup/restore (with automatic pre-restore safety snapshot), cache refresh, schema migrations, and a type-to-confirm content reset
 
 ### Backend
 - **Unified User Model** - Guests and accounts share one `users` table, distinguished by `is_guest` and a `role` of `guest|viewer|editor|admin`. Guest activity merges into the new account on signup
@@ -80,7 +81,7 @@ DB_PASSWORD=your_db_password
 Visit `https://yourdomain.com/install.php` in your browser. The setup wizard will:
 
 1. Test your database connection
-2. Run the database migrations (001 → 006)
+2. Run the database migrations (001 → 007)
 3. Create your admin account (and write the `.installed` lock immediately)
 4. Migrate any existing JSON data (or skip on a fresh install)
 5. Show you the post-install lock-down checklist
@@ -113,6 +114,7 @@ mysql -u your_db_user -p your_database_name < db/migrations/003_user_accounts.sq
 mysql -u your_db_user -p your_database_name < db/migrations/004_collections.sql
 mysql -u your_db_user -p your_database_name < db/migrations/005_auth_throttle.sql
 mysql -u your_db_user -p your_database_name < db/migrations/006_comments.sql
+mysql -u your_db_user -p your_database_name < db/migrations/007_comment_user_set_null.sql
 ```
 
 After the migrations are in place, create the first admin account by
@@ -255,7 +257,7 @@ videos/
 ├── db/                        # Database layer
 │   ├── Database.php           # PDO singleton + helpers
 │   ├── config.php             # Configuration loader
-│   └── migrations/            # 001 → 006 SQL migration files
+│   └── migrations/            # 001 → 007 SQL migration files
 │
 ├── services/                  # Business logic (PSR-4 autoloaded)
 │   ├── ArchiveOrgService.php  # Archive.org API client + cache glue
@@ -330,12 +332,6 @@ videos/
 | `ENABLE_USER_SESSIONS` | `true` | Enable user session tracking |
 | `ENABLE_API_LOGGING` | `true` | Enable API request logging |
 | `APP_URL` | auto | Base URL used in email links (e.g. password reset). Set explicitly in production |
-
-## Maintenance Notes
-
-- Keep `README.md` as the canonical documentation source for setup and operations.
-- Historical internal audit/planning notes have been removed from the repository to reduce drift.
-- If behavior changes, update this README in the same pull request as the code change.
 | `MAIL_FROM` | - | From address for outgoing mail |
 | `MAIL_FROM_NAME` | site name | From name for outgoing mail |
 | `SMTP_HOST` | - | SMTP server (leave blank to use PHP mail()) |
@@ -361,6 +357,11 @@ Set up cron jobs for automated cache management:
 # Process async cache queue every 5 minutes
 */5 * * * * php /path/to/videos/cron/process_cache_queue.php
 ```
+
+## Maintenance Notes
+
+- Keep `README.md` as the canonical documentation source for setup and operations.
+- If behavior changes, update this README in the same pull request as the code change.
 
 ## API Reference
 
@@ -404,6 +405,8 @@ sanitizers.
 |---|---|---|
 | `/api/cache.php` | GET/POST | Cache stats (GET); destructive actions require `admin`/`editor` role |
 | `/api/diagnose.php` | GET | System diagnostics; admin-gated |
+| `/api/admin/metrics.php` | GET/POST | Dashboard metrics, user-role management, comment moderation (role changes are full-admin-only) |
+| `/api/admin/maintenance.php` | GET/POST | DB status, SQL backup/restore, cache refresh, content reset; full-admin-only with type-to-confirm |
 
 ## Security
 

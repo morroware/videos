@@ -106,7 +106,7 @@ try {
 
     // Serve the file if we have it
     if ($localPath && file_exists($localPath)) {
-        serveFile($localPath);
+        serveFile($localPath, $archiveId);
     } else {
         // Caching failed - redirect to Archive.org
         redirectToArchive($archiveId);
@@ -126,6 +126,11 @@ function downloadAndCacheThumbnail($archiveId, $db, $config) {
     $sourceUrl = "https://archive.org/services/img/{$archiveId}";
     $imageData = null;
 
+    // Upstream responses bigger than this are not thumbnails. The cap bounds
+    // both the buffered download and — more importantly — the GD decode below,
+    // which is the expensive step for an oversized or crafted image.
+    $maxBytes = 10 * 1024 * 1024;
+
     // Try cURL first (more reliable on shared hosting)
     if (function_exists('curl_init')) {
         $ch = curl_init();
@@ -136,6 +141,7 @@ function downloadAndCacheThumbnail($archiveId, $db, $config) {
             CURLOPT_TIMEOUT => 15,
             CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; ArchiveFilmClub/1.0)',
             CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_MAXFILESIZE => $maxBytes, // honored when Content-Length is sent
         ]);
         $imageData = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -160,11 +166,16 @@ function downloadAndCacheThumbnail($archiveId, $db, $config) {
             ],
         ]);
 
-        $imageData = @file_get_contents($sourceUrl, false, $context);
+        // maxlen reads one byte past the cap so the size check below can
+        // tell "exactly at the cap" from "truncated".
+        $imageData = @file_get_contents($sourceUrl, false, $context, 0, $maxBytes + 1);
     }
 
     if ($imageData === null || $imageData === false || strlen($imageData) < 100) {
         return null;
+    }
+    if (strlen($imageData) > $maxBytes) {
+        return null; // too large to be a thumbnail — don't hand it to GD
     }
 
     // Verify it's an image
@@ -274,13 +285,19 @@ function downloadAndCacheThumbnail($archiveId, $db, $config) {
  * That makes the cache 'immutable' — browsers and intermediaries can keep
  * it for the full max-age without ever revalidating.
  */
-function serveFile($path) {
+function serveFile($path, $archiveId) {
     // Clean output buffer before serving
     while (ob_get_level()) {
         ob_end_clean();
     }
 
+    // We only ever write GD-re-encoded JPEGs, so anything else under this
+    // path is unexpected — never serve it (a non-image file here must not
+    // become an XSS host). Fall back upstream like every other error path.
     $mime = @mime_content_type($path) ?: 'image/jpeg';
+    if (!in_array($mime, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'], true)) {
+        redirectToArchive($archiveId);
+    }
     $size = @filesize($path);
     $mtime = @filemtime($path);
     $etag = md5($path . $mtime);
@@ -297,6 +314,7 @@ function serveFile($path) {
 
     // Send headers and file
     header('Content-Type: ' . $mime);
+    header('X-Content-Type-Options: nosniff');
     header('Content-Length: ' . $size);
     // 1 year + immutable. Thumbnails for archive.org items don't change.
     header('Cache-Control: public, max-age=31536000, immutable');

@@ -19,6 +19,7 @@ import { CollectionService } from '../services/CollectionService.js';
 import { AuthService } from '../services/AuthService.js';
 
 let rootEl = null;
+let lastFocused = null; // element to return focus to when the dialog closes
 let state = {
   video: null,
   onChange: null,
@@ -75,13 +76,42 @@ function ensureRoot() {
   rootEl.querySelector('[data-create-form]').addEventListener('submit', handleCreate);
 
   document.addEventListener('keydown', (e) => {
-    if (rootEl && rootEl.hasAttribute('data-open') && e.key === 'Escape') {
+    if (!rootEl || !rootEl.hasAttribute('data-open')) return;
+    if (e.key === 'Escape') {
       close();
+    } else if (e.key === 'Tab') {
+      trapFocus(e);
     }
   });
 
   document.body.appendChild(rootEl);
   return rootEl;
+}
+
+/** Tabbable elements currently visible inside the dialog. */
+function focusableItems() {
+  return Array.from(rootEl.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter((el) => !el.disabled && el.offsetParent !== null);
+}
+
+/**
+ * Keep Tab / Shift+Tab cycling inside the open dialog (aria-modal="true"
+ * promises this; without it keyboard users tab into the page behind).
+ */
+function trapFocus(e) {
+  const items = focusableItems();
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !rootEl.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || !rootEl.contains(active))) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 function handleClick(e) {
@@ -262,16 +292,27 @@ function open({ video, onChange = null } = {}) {
     error: null,
   };
 
+  lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
   rootEl.setAttribute('data-open', 'true');
   document.body.style.overflow = 'hidden';
   render();
   refresh();
+
+  const closeBtn = rootEl.querySelector('.collection-picker-close');
+  if (closeBtn) closeBtn.focus();
 }
 
 function close() {
   if (!rootEl) return;
   rootEl.removeAttribute('data-open');
   document.body.style.overflow = '';
+
+  // Return focus to the control that opened the dialog (if still on page).
+  if (lastFocused && document.contains(lastFocused)) {
+    lastFocused.focus();
+  }
+  lastFocused = null;
 }
 
 export const CollectionPicker = {

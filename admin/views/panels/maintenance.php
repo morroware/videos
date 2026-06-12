@@ -79,6 +79,8 @@ $maintSiteName = $site_settings['siteName'] ?? 'Archive Film Club';
                                         <code>DROP</code>/<code>CREATE</code>/<code>INSERT</code> over your tables, so it
                                         <strong>overwrites</strong> their current contents. A full server-side safety backup is taken
                                         automatically first (kept under <code>backups/</code>) unless you skip it.
+                                        A restore is <strong>not atomic</strong> — if the result reports failed statements, the
+                                        database may be partially restored; restore the safety snapshot before continuing.
                                     </div>
                                 </div>
                             </div>

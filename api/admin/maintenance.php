@@ -136,6 +136,14 @@ try {
             $includeCaches = array_key_exists('include_caches', $body)
                 ? ApiController::sanitizeBool($body['include_caches'])
                 : true;
+
+            // Serialize against restore/reset BEFORE any download headers go
+            // out, so a busy lock still returns a clean JSON error. A dump
+            // taken mid-restore would capture a half-restored database.
+            if (!$svc->acquireMaintenanceLock()) {
+                $api->error('Another maintenance operation is already running — try again in a moment.', 409);
+            }
+
             $audit('backup', ['include_caches' => $includeCaches]);
 
             $fname = 'afc-backup-' . gmdate('Ymd-His')
@@ -147,7 +155,11 @@ try {
             header('Cache-Control: private, no-store');
             header('X-Content-Type-Options: nosniff');
 
-            $svc->streamBackup($includeCaches);
+            try {
+                $svc->streamBackup($includeCaches);
+            } finally {
+                $svc->releaseMaintenanceLock();
+            }
             exit;
         }
 

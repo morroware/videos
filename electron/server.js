@@ -286,8 +286,8 @@ function startServer() {
     // patterns are anchored to the root so the frontend's own src/js/services/
     // and src/js/components/ modules keep loading.
     const DENY_EXT = /\.(php|sql|sh|log|lock|ini)$/i;
-    const DENY_DOTFILE = /(^|\/)\.(env|git|ht)/i;       // .env(.example), .git/, .htaccess
-    const DENY_DIR = /^\/(db|electron)\//i;             // server-side source dirs
+    const DENY_DOTFILE = /(^|\/)\.(env|git|ht|installed)/i;  // .env(.example), .git/, .htaccess, .installed
+    const DENY_DIR = /^\/(db|electron|backups|logs)\//i;     // source + server-side data dirs (DB dumps, logs)
     app.use((req, res, next) => {
       let p;
       try { p = decodeURIComponent(req.path); } catch { p = req.path; }

@@ -126,7 +126,7 @@ class SettingsService {
 
             $this->db->commit();
             return true;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             try { $this->db->rollback(); } catch (Throwable $_) { /* nothing to roll back */ }
             error_log("Failed to update settings: " . $e->getMessage());
             return false;
@@ -216,8 +216,8 @@ class SettingsService {
 
             $this->db->commit();
             return true;
-        } catch (Exception $e) {
-            $this->db->rollback();
+        } catch (Throwable $e) {
+            try { $this->db->rollback(); } catch (Throwable $_) { /* nothing to roll back */ }
             error_log("Failed to update recommendations: " . $e->getMessage());
             return false;
         }
@@ -335,8 +335,8 @@ class SettingsService {
 
             $this->db->commit();
             return true;
-        } catch (Exception $e) {
-            $this->db->rollback();
+        } catch (Throwable $e) {
+            try { $this->db->rollback(); } catch (Throwable $_) { /* nothing to roll back */ }
             error_log("Failed to update featured sections: " . $e->getMessage());
             return false;
         }

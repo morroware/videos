@@ -23,6 +23,8 @@ class ArchiveOrgService {
     const API_BASE_URL = 'https://archive.org';
     const API_TIMEOUT = 15;
     const USER_AGENT = 'Mozilla/5.0 (compatible; ArchiveFilmClub/1.0)';
+    /** Cap on a buffered archive.org response (memory guard, not a quota). */
+    const MAX_RESPONSE_BYTES = 52428800; // 50 MB
 
     // Proactive caching settings
     private $proactiveThumbnailCaching = true;
@@ -613,6 +615,7 @@ class ArchiveOrgService {
                     CURLOPT_TIMEOUT => self::API_TIMEOUT,
                     CURLOPT_USERAGENT => self::USER_AGENT,
                     CURLOPT_SSL_VERIFYPEER => true,
+                    CURLOPT_MAXFILESIZE => self::MAX_RESPONSE_BYTES,
                 ]);
                 curl_multi_add_handle($mh, $ch);
                 $handles[$id] = $ch;
@@ -686,6 +689,9 @@ class ArchiveOrgService {
                 CURLOPT_TIMEOUT => self::API_TIMEOUT,
                 CURLOPT_USERAGENT => self::USER_AGENT,
                 CURLOPT_SSL_VERIFYPEER => true,
+                // Generous memory guard — real archive.org JSON responses are
+                // far smaller; only honored when Content-Length is sent.
+                CURLOPT_MAXFILESIZE => self::MAX_RESPONSE_BYTES,
             ]);
             $data = curl_exec($ch);
             $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -711,7 +717,7 @@ class ArchiveOrgService {
                 ],
             ]);
 
-            $data = @file_get_contents($url, false, $context);
+            $data = @file_get_contents($url, false, $context, 0, self::MAX_RESPONSE_BYTES);
 
             // Check HTTP status
             $status = 200;

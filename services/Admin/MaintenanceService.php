@@ -33,6 +33,17 @@ class MaintenanceService
      */
     private const BACKUP_MARKER = 'Archive Film Club SQL backup';
 
+    /** Thrown when another request holds the maintenance lock. */
+    private const LOCK_BUSY_MESSAGE = 'Another maintenance operation (backup, restore, or reset) is already running — wait for it to finish and try again.';
+
+    /**
+     * Cap on the decompressed size of an uploaded .sql.gz restore. The whole
+     * script is held in memory for statement splitting, so an oversized (or
+     * corrupt) archive must fail with a clean error instead of an opaque
+     * out-of-memory 500 partway through.
+     */
+    private const MAX_RESTORE_SQL_BYTES = 268435456; // 256 MB
+
     /**
      * Cache tables hold only regenerable data (re-fetched from Archive.org).
      * They dominate backup size and are the bulk of a content reset.
@@ -175,8 +186,29 @@ class MaintenanceService
         $this->out("SET NAMES utf8mb4;\n");
         $this->out("SET FOREIGN_KEY_CHECKS=0;\n\n");
 
-        foreach ($tables as $table) {
-            $this->dumpTable($table);
+        // Dump from a single REPEATABLE READ snapshot (what mysqldump
+        // --single-transaction does). Without it, the paged SELECTs in
+        // dumpTable() each see live data: a write landing between pages can
+        // duplicate or skip rows, and tables dumped seconds apart can be
+        // mutually inconsistent (e.g. a comment whose user row is missing).
+        // Best-effort — if the host refuses, dump the old way.
+        $snapshot = false;
+        try {
+            $this->pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $this->pdo->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT');
+            $snapshot = true;
+        } catch (Throwable $e) {
+            // Non-InnoDB tables / restricted host — proceed unsnapshotted.
+        }
+
+        try {
+            foreach ($tables as $table) {
+                $this->dumpTable($table);
+            }
+        } finally {
+            if ($snapshot) {
+                try { $this->pdo->exec('COMMIT'); } catch (Throwable $e) {}
+            }
         }
 
         $this->out("\nSET FOREIGN_KEY_CHECKS=1;\n");
@@ -221,6 +253,28 @@ class MaintenanceService
         $this->out("DROP TABLE IF EXISTS `{$table}`;\n");
         $this->out($createSql . ";\n");
 
+        // Page in primary-key order. LIMIT/OFFSET without ORDER BY has no
+        // guaranteed row order in MySQL, so consecutive pages could overlap
+        // or leave gaps — a silently corrupt backup. PK order makes paging
+        // deterministic (the consistent snapshot in streamBackup() makes it
+        // point-in-time stable as well).
+        $orderBy = '';
+        try {
+            $pk = [];
+            $keys = $this->pdo
+                ->query("SHOW KEYS FROM `{$table}` WHERE Key_name = 'PRIMARY'")
+                ->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($keys as $key) {
+                $pk[(int)$key['Seq_in_index']] = '`' . str_replace('`', '``', (string)$key['Column_name']) . '`';
+            }
+            if ($pk) {
+                ksort($pk);
+                $orderBy = ' ORDER BY ' . implode(', ', $pk);
+            }
+        } catch (Throwable $e) {
+            // No readable PK info — fall back to unordered paging.
+        }
+
         $batch = 200;
         $offset = 0;
         $columns = null;
@@ -229,7 +283,7 @@ class MaintenanceService
             // Interpolated (int) LIMIT/OFFSET — bound `?` here throws under
             // native prepares (audit C1). The casts make this injection-safe.
             $rows = $this->pdo
-                ->query("SELECT * FROM `{$table}` LIMIT {$batch} OFFSET {$offset}")
+                ->query("SELECT * FROM `{$table}`{$orderBy} LIMIT {$batch} OFFSET {$offset}")
                 ->fetchAll(PDO::FETCH_ASSOC);
 
             if ($rows) {
@@ -331,54 +385,61 @@ class MaintenanceService
         }
         sort($files);
 
-        $applied = 0;
-        $skipped = 0;
-        $perFile = [];
-
-        foreach ($files as $file) {
-            $sql = (string)file_get_contents($file);
-            // Strip line comments before splitting on ';' (a comment can
-            // contain a semicolon). Mirrors install.php's runner exactly.
-            $sql = preg_replace('/^\s*--[^\n]*$/m', '', $sql);
-            $statements = array_filter(
-                array_map('trim', explode(';', $sql)),
-                function ($s) { return $s !== ''; }
-            );
-
-            $fileApplied = 0;
-            $fileSkipped = 0;
-            foreach ($statements as $statement) {
-                try {
-                    $this->pdo->exec($statement);
-                    $applied++;
-                    $fileApplied++;
-                } catch (Throwable $e) {
-                    $msg = $e->getMessage();
-                    if (stripos($msg, 'already exists') === false
-                        && stripos($msg, 'Duplicate column') === false
-                        && stripos($msg, 'Duplicate key name') === false
-                        && stripos($msg, 'Multiple primary key') === false) {
-                        throw new RuntimeException(
-                            'Migration ' . basename($file) . ' failed: ' . $msg
-                        );
-                    }
-                    $skipped++;
-                    $fileSkipped++;
-                }
-            }
-            $perFile[] = [
-                'file' => basename($file),
-                'applied' => $fileApplied,
-                'skipped' => $fileSkipped,
-            ];
+        if (!$this->acquireMaintenanceLock()) {
+            throw new RuntimeException(self::LOCK_BUSY_MESSAGE);
         }
+        try {
+            $applied = 0;
+            $skipped = 0;
+            $perFile = [];
 
-        return [
-            'files' => count($files),
-            'statements_applied' => $applied,
-            'statements_skipped' => $skipped,
-            'detail' => $perFile,
-        ];
+            foreach ($files as $file) {
+                $sql = (string)file_get_contents($file);
+                // Strip line comments before splitting on ';' (a comment can
+                // contain a semicolon). Mirrors install.php's runner exactly.
+                $sql = preg_replace('/^\s*--[^\n]*$/m', '', $sql);
+                $statements = array_filter(
+                    array_map('trim', explode(';', $sql)),
+                    function ($s) { return $s !== ''; }
+                );
+
+                $fileApplied = 0;
+                $fileSkipped = 0;
+                foreach ($statements as $statement) {
+                    try {
+                        $this->pdo->exec($statement);
+                        $applied++;
+                        $fileApplied++;
+                    } catch (Throwable $e) {
+                        $msg = $e->getMessage();
+                        if (stripos($msg, 'already exists') === false
+                            && stripos($msg, 'Duplicate column') === false
+                            && stripos($msg, 'Duplicate key name') === false
+                            && stripos($msg, 'Multiple primary key') === false) {
+                            throw new RuntimeException(
+                                'Migration ' . basename($file) . ' failed: ' . $msg
+                            );
+                        }
+                        $skipped++;
+                        $fileSkipped++;
+                    }
+                }
+                $perFile[] = [
+                    'file' => basename($file),
+                    'applied' => $fileApplied,
+                    'skipped' => $fileSkipped,
+                ];
+            }
+
+            return [
+                'files' => count($files),
+                'statements_applied' => $applied,
+                'statements_skipped' => $skipped,
+                'detail' => $perFile,
+            ];
+        } finally {
+            $this->releaseMaintenanceLock();
+        }
     }
 
     /**
@@ -447,26 +508,33 @@ class MaintenanceService
     {
         @set_time_limit(0);
 
-        $targets = array_merge(self::CONTENT_TABLES, self::CACHE_TABLES);
-        $cleared = [];
-        $totalRows = 0;
-
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
-        try {
-            foreach ($targets as $table) {
-                if (!$this->tableExists($table)) {
-                    continue;
-                }
-                $count = (int)$this->pdo->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
-                $this->pdo->exec("TRUNCATE TABLE `{$table}`");
-                $cleared[$table] = $count;
-                $totalRows += $count;
-            }
-        } finally {
-            $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+        if (!$this->acquireMaintenanceLock()) {
+            throw new RuntimeException(self::LOCK_BUSY_MESSAGE);
         }
+        try {
+            $targets = array_merge(self::CONTENT_TABLES, self::CACHE_TABLES);
+            $cleared = [];
+            $totalRows = 0;
 
-        $thumbsDeleted = $this->clearThumbnailFiles();
+            $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+            try {
+                foreach ($targets as $table) {
+                    if (!$this->tableExists($table)) {
+                        continue;
+                    }
+                    $count = (int)$this->pdo->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
+                    $this->pdo->exec("TRUNCATE TABLE `{$table}`");
+                    $cleared[$table] = $count;
+                    $totalRows += $count;
+                }
+            } finally {
+                $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+            }
+
+            $thumbsDeleted = $this->clearThumbnailFiles();
+        } finally {
+            $this->releaseMaintenanceLock();
+        }
 
         return [
             'tables_cleared' => count($cleared),
@@ -508,10 +576,20 @@ class MaintenanceService
         }
 
         // Transparently accept a gzip-compressed dump (magic bytes 1f 8b).
+        // The decode is capped so an oversized/corrupt archive fails with a
+        // clear message instead of exhausting memory mid-request.
         if (substr($sql, 0, 2) === "\x1f\x8b") {
-            $decoded = function_exists('gzdecode') ? @gzdecode($sql) : false;
+            $decoded = function_exists('gzdecode')
+                ? @gzdecode($sql, self::MAX_RESTORE_SQL_BYTES + 1)
+                : false;
             if ($decoded === false) {
                 throw new RuntimeException('Could not decompress the gzip backup on this server.');
+            }
+            if (strlen($decoded) > self::MAX_RESTORE_SQL_BYTES) {
+                throw new RuntimeException(
+                    'The decompressed backup exceeds ' . (self::MAX_RESTORE_SQL_BYTES >> 20)
+                    . ' MB — restore a file this large with the MySQL CLI or phpMyAdmin instead.'
+                );
             }
             $sql = $decoded;
         }
@@ -521,42 +599,52 @@ class MaintenanceService
             throw new RuntimeException('This file is not an Archive Film Club backup (the header marker is missing).');
         }
 
-        $snapshot = null;
-        if (!$skipSafety) {
-            $snapshot = $this->writeSafetySnapshot();
-            if ($snapshot === null) {
-                throw new RuntimeException(
-                    'Could not write an automatic safety backup (check write permissions on the backups/ folder). '
-                    . 'Download a backup yourself, then re-run with "skip the automatic safety backup".'
-                );
-            }
+        // Serialize against any other maintenance run: two interleaved
+        // restores (or a restore racing a content reset) would corrupt the
+        // database and each other's safety snapshots.
+        if (!$this->acquireMaintenanceLock()) {
+            throw new RuntimeException(self::LOCK_BUSY_MESSAGE);
         }
-
-        $statements = self::splitSqlStatements($sql);
-        $applied = 0;
-        $failed = 0;
-        $errors = [];
-
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
         try {
-            foreach ($statements as $statement) {
-                $statement = trim($statement);
-                if ($statement === '') {
-                    continue;
+            $snapshot = null;
+            if (!$skipSafety) {
+                $snapshot = $this->writeSafetySnapshot();
+                if ($snapshot === null) {
+                    throw new RuntimeException(
+                        'Could not write an automatic safety backup (check write permissions on the backups/ folder). '
+                        . 'Download a backup yourself, then re-run with "skip the automatic safety backup".'
+                    );
                 }
-                try {
-                    $this->pdo->exec($statement);
-                    $applied++;
-                } catch (Throwable $e) {
-                    $failed++;
-                    if (count($errors) < 10) {
-                        $errors[] = substr($e->getMessage(), 0, 200);
+            }
+
+            $statements = self::splitSqlStatements($sql);
+            $applied = 0;
+            $failed = 0;
+            $errors = [];
+
+            $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+            try {
+                foreach ($statements as $statement) {
+                    $statement = trim($statement);
+                    if ($statement === '') {
+                        continue;
+                    }
+                    try {
+                        $this->pdo->exec($statement);
+                        $applied++;
+                    } catch (Throwable $e) {
+                        $failed++;
+                        if (count($errors) < 10) {
+                            $errors[] = substr($e->getMessage(), 0, 200);
+                        }
                     }
                 }
+            } finally {
+                // Re-enable FK checks even if a statement threw fatally.
+                try { $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Throwable $e) {}
             }
         } finally {
-            // Re-enable FK checks even if a statement threw fatally.
-            try { $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Throwable $e) {}
+            $this->releaseMaintenanceLock();
         }
 
         // The bytecode/object cache may reference the pre-restore schema.
@@ -725,6 +813,49 @@ class MaintenanceService
         foreach ($remove as $f) {
             @unlink($f);
         }
+    }
+
+    // =====================================================
+    // CONCURRENCY GUARD
+    // =====================================================
+
+    /**
+     * Advisory lock that serializes maintenance operations (restore, content
+     * reset, migrations, and the API's backup stream) across concurrent admin
+     * requests. Same GET_LOCK pattern as CacheManager::acquireQueueLock():
+     * connection-scoped, auto-released if the process dies, and per-database
+     * named so co-hosted installs on one MySQL server don't serialize each
+     * other. If advisory locks are unavailable we proceed — the guard is
+     * best-effort and a degraded host keeps working.
+     */
+    public function acquireMaintenanceLock(int $timeoutSeconds = 5): bool
+    {
+        try {
+            $got = $this->db->fetchColumn(
+                'SELECT GET_LOCK(?, ?)',
+                [$this->maintenanceLockName(), max(0, $timeoutSeconds)]
+            );
+            return (int)$got === 1;
+        } catch (Throwable $e) {
+            return true;
+        }
+    }
+
+    /** Release the maintenance advisory lock (best-effort). */
+    public function releaseMaintenanceLock(): void
+    {
+        try {
+            $this->db->query('SELECT RELEASE_LOCK(?)', [$this->maintenanceLockName()]);
+        } catch (Throwable $e) {
+            // The lock also auto-releases when the connection closes.
+        }
+    }
+
+    /** Per-database lock name, hashed to stay within the 64-char limit. */
+    private function maintenanceLockName(): string
+    {
+        $db = $this->dbName !== '' ? $this->dbName : 'default';
+        return 'afc_maint_' . substr(md5($db), 0, 16);
     }
 
     // =====================================================

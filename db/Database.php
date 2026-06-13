@@ -216,7 +216,11 @@ class Database {
     }
 
     /**
-     * Execute a callback within a transaction
+     * Execute a callback within a transaction.
+     *
+     * Catches Throwable (not just Exception) so an Error thrown inside the
+     * callback — a TypeError, a failed assertion — still rolls back instead
+     * of leaving the transaction open.
      */
     public function transaction(callable $callback) {
         $this->beginTransaction();
@@ -224,7 +228,7 @@ class Database {
             $result = $callback($this);
             $this->commit();
             return $result;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->rollback();
             throw $e;
         }

@@ -57,6 +57,11 @@ if (isset($_GET['id'])) {
     $notFound = true;
 }
 
+if ($notFound) {
+    // Real 404 status — otherwise crawlers index the error page as a 200.
+    http_response_code(404);
+}
+
 try {
     $settingsService = new SettingsService();
     $site_settings = array_merge(
